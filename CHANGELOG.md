@@ -2,9 +2,9 @@
 
 ## 0.1.0
 
-Not tagged and not published.
-
-- Core types, a policy file, and an append-only audit log.
-- A Python binding, a Mem0 wrapper, and a LangGraph store.
-- A command line and an MCP memory proxy.
-- Attack suite ML-001 through ML-010 on mem0, langgraph, and mcp-memory.
+- Core policy engine. First match wins. No match quarantines the write.
+- Provenance and taint on every write. A derived write keeps the parent taint.
+- Hash-chained audit log in SQLite. `verify` reports the first broken link.
+- Command line for the audit log.
+- MCP memory proxy for write tools and filtered reads.
+- Python package with a Mem0 wrapper and a LangGraph store.
