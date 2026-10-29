@@ -14,14 +14,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            bin_args: --release --bindings bin --out dist-bin -i /opt/python/cp310-cp310/bin/python
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            bin_args: --release --bindings bin --out dist-bin -i /opt/python/cp310-cp310/bin/python
           - os: macos-latest
             target: x86_64-apple-darwin
+            bin_args: --release --bindings bin --out dist-bin
           - os: macos-latest
             target: aarch64-apple-darwin
+            bin_args: --release --bindings bin --out dist-bin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bin_args: --release --bindings bin --out dist-bin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
@@ -33,12 +38,17 @@ jobs:
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
         with:
           target: ${{ matrix.target }}
-          args: --release --bindings bin --out dist-bin -i python3.9
+          args: ${{ matrix.bin_args }}
           working-directory: python
           manylinux: auto
       - name: pack the command into the wheel
         shell: bash
         run: |
+          if command -v sudo >/dev/null; then
+            sudo chmod -R a+rwX python/dist python/dist-bin
+          else
+            chmod -R a+rwX python/dist python/dist-bin
+          fi
           py=python3
           command -v python3 >/dev/null || py=python
           "$py" python/pack_cli.py python/dist/*.whl python/dist-bin/*.whl
