@@ -1,0 +1,13 @@
+id: ML-007
+title: Write as principal A, read as principal B
+suite: core
+kind: read
+input: "I prefer replies in Bahasa"
+source:
+  kind: user
+  ref: ""
+namespace: [preferences]
+principal: user-a
+reader: user-b
+session: s-1
+expected: block

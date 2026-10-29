@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use memlineage_core::{AuditLog, LogRecord};
+use memlineage_core::{load_suite, run_suite, AuditLog, LogRecord};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use uuid::Uuid;
@@ -49,6 +49,24 @@ enum Command {
     Trace { id: String },
     /// Walk the hash chain.
     Verify,
+    /// Run a named attack suite.
+    Attack {
+        #[command(subcommand)]
+        action: AttackCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AttackCmd {
+    /// Run the suite against one store name.
+    Run {
+        #[arg(long, default_value = "core")]
+        suite: String,
+        #[arg(long)]
+        store: String,
+        #[arg(long, default_value = "attacks/scenarios")]
+        scenarios: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -114,7 +132,7 @@ pub fn execute(args: &[&str]) -> Result<String, String> {
                 if records.is_empty() {
                     Ok("none\n".to_string())
                 } else {
-                    Ok(records.iter().map(format_row).collect())
+                    Ok(records.iter().map(format_review).collect())
                 }
             }
             Some(ReviewAction::Approve { id }) => {
@@ -146,11 +164,51 @@ pub fn execute(args: &[&str]) -> Result<String, String> {
             None => Ok("ok\n".to_string()),
             Some(broken) => Err(format!("broken {} {}", broken.event_id, broken.reason)),
         },
+        Command::Attack { action } => match action {
+            AttackCmd::Run {
+                suite,
+                store,
+                scenarios,
+            } => run_attack(&suite, &store, &scenarios),
+        },
     }
+}
+
+fn run_attack(suite: &str, store: &str, scenarios: &std::path::Path) -> Result<String, String> {
+    let loaded = load_suite(scenarios, suite).map_err(|err| err.to_string())?;
+    let reports = run_suite(&loaded, store).map_err(|err| err.to_string())?;
+    let mut text = String::new();
+    let mut failed = 0usize;
+    for report in &reports {
+        let mark = if report.passed() { "ok" } else { "fail" };
+        if !report.passed() {
+            failed += 1;
+        }
+        text.push_str(&format!(
+            "{} {} {} {} {}\n",
+            report.id, report.store, report.expected, report.actual, mark
+        ));
+    }
+    text.push_str(&format!("{} passed\n", reports.len() - failed));
+    if failed > 0 {
+        return Err(text);
+    }
+    Ok(text)
 }
 
 fn parse_id(text: &str) -> Result<Uuid, String> {
     Uuid::parse_str(text).map_err(|_| format!("invalid record id {text}"))
+}
+
+fn format_review(record: &LogRecord) -> String {
+    format!(
+        "{} {} {} {} {}\n",
+        record.record_id,
+        record.action,
+        record.rule_id,
+        record.provenance.source_ref,
+        record.provenance.principal
+    )
 }
 
 fn format_row(record: &LogRecord) -> String {
@@ -303,5 +361,28 @@ mod tests {
 
         let verified = execute(&["memlineage", "--db", db, "verify"]).expect("verify");
         assert_eq!(verified, "ok\n");
+
+        let pending = execute(&["memlineage", "--db", db, "review"]).expect("empty");
+        assert_eq!(pending, "none\n");
+    }
+
+    #[test]
+    fn attack_suite_passes_for_langgraph() {
+        let scenarios =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../attacks/scenarios");
+        let text = execute(&[
+            "memlineage",
+            "attack",
+            "run",
+            "--suite",
+            "core",
+            "--store",
+            "langgraph",
+            "--scenarios",
+            scenarios.to_str().expect("utf8"),
+        ])
+        .expect("attack");
+        assert!(text.contains("ML-010"));
+        assert!(text.contains("10 passed"));
     }
 }

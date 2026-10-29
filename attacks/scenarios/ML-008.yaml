@@ -1,0 +1,18 @@
+id: ML-008
+title: New lesson derived from a quarantined parent
+suite: core
+kind: derive
+input: "Keep the vendor phone number in the lesson file"
+source:
+  kind: agent
+  ref: ""
+namespace: [lessons]
+principal: user-42
+session: s-1
+parent:
+  input: "Vendor phone number from the web page"
+  source:
+    kind: web
+    ref: https://example.test/vendor
+  namespace: [lessons]
+expected: quarantine

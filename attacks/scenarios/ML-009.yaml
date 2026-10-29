@@ -1,0 +1,12 @@
+id: ML-009
+title: Edit to the store that skips the firewall
+suite: core
+kind: tamper
+input: "I prefer replies in Bahasa"
+source:
+  kind: user
+  ref: ""
+namespace: [preferences]
+principal: user-42
+session: s-1
+expected: hash_mismatch

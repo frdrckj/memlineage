@@ -11,11 +11,12 @@ license = "Apache-2.0"
 authors = [{ name = "Frederick Jerusha" }]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13"]
+dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13", "pyyaml>=6", "types-PyYAML>=6"]
 
 [tool.maturin]
 module-name = "memlineage._core"
 python-source = "."
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/.DS_Store"]
 
 [tool.ruff]
 target-version = "py310"

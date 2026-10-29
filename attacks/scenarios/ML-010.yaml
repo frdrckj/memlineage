@@ -1,0 +1,12 @@
+id: ML-010
+title: Normal user preference in Bahasa Indonesia
+suite: core
+kind: write
+input: "I prefer replies in Bahasa"
+source:
+  kind: user
+  ref: ""
+namespace: [preferences]
+principal: user-42
+session: s-1
+expected: allow
