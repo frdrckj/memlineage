@@ -66,7 +66,7 @@ pub enum AuditError {
 
 /// Append-only hash-chained log of policy decisions.
 pub struct AuditLog {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 pub(crate) struct StoredEvent {
