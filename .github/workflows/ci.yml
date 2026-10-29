@@ -74,7 +74,6 @@ jobs:
       - name: command
         run: cargo build -p memlineage-py --bin memlineage
       - name: pytest
-        working-directory: python
         env:
           OPENAI_API_KEY: sk-dummy
-        run: pytest
+        run: pytest python/tests
