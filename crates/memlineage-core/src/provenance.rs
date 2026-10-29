@@ -1,5 +1,6 @@
 use crate::hash::content_sha256;
 use crate::model::{Provenance, SourceKind, TrustLevel};
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -8,6 +9,26 @@ use uuid::Uuid;
 pub enum TrustAssign {
     Level(TrustLevel),
     Inherit,
+}
+
+impl<'de> Deserialize<'de> for TrustAssign {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        match text.as_str() {
+            "hostile" => Ok(Self::Level(TrustLevel::Hostile)),
+            "untrusted" => Ok(Self::Level(TrustLevel::Untrusted)),
+            "verified" => Ok(Self::Level(TrustLevel::Verified)),
+            "trusted" => Ok(Self::Level(TrustLevel::Trusted)),
+            "inherit" => Ok(Self::Inherit),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["hostile", "untrusted", "verified", "trusted", "inherit"],
+            )),
+        }
+    }
 }
 
 /// Trust assignments from a policy file.
