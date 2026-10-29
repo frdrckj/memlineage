@@ -9,6 +9,19 @@ description = "Provenance and taint checks for agent memory."
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "Frederick Jerusha" }]
+readme = "README.md"
+keywords = ["agents", "memory", "security", "provenance"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/frdrckj/memlineage"
+Repository = "https://github.com/frdrckj/memlineage"
+Issues = "https://github.com/frdrckj/memlineage/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13", "pyyaml>=6", "types-PyYAML>=6"]

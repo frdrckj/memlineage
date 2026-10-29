@@ -13,6 +13,9 @@ edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.98"
 repository = "https://github.com/frdrckj/memlineage"
+homepage = "https://github.com/frdrckj/memlineage"
+keywords = ["agents", "memory", "security", "provenance", "llm"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
