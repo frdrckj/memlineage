@@ -33,7 +33,7 @@ jobs:
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
         with:
           target: ${{ matrix.target }}
-          args: --release --bindings bin --out dist-bin
+          args: --release --bindings bin --out dist-bin -i python3.9
           working-directory: python
           manylinux: auto
       - name: pack the command into the wheel
