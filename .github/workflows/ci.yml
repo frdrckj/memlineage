@@ -63,8 +63,10 @@ jobs:
       - name: build
         working-directory: python
         run: |
-          maturin build --out dist
-          python -m pip install dist/*.whl
+          python -m venv "$RUNNER_TEMP/venv"
+          . "$RUNNER_TEMP/venv/bin/activate"
+          python -m pip install -q maturin
+          maturin develop
       - name: ruff
         working-directory: python
         run: ruff check . && ruff format --check .
@@ -74,6 +76,10 @@ jobs:
       - name: command
         run: cargo build -p memlineage-py --bin memlineage
       - name: pytest
+        working-directory: python
         env:
           OPENAI_API_KEY: sk-dummy
-        run: pytest python/tests
+        run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
+          python -m pip install -q pytest pyyaml langgraph "langgraph-checkpoint-postgres>=3.1.3" "psycopg[binary]" mem0ai==2.2.1
+          pytest
