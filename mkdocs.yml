@@ -1,0 +1,10 @@
+site_name: memlineage
+site_description: Provenance and taint checks for agent memory.
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Threat model: threat-model.md
+  - Policy: policy.md
+  - Adapters: adapters.md
+  - Scenarios: scenarios.md
