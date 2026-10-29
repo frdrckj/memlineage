@@ -70,10 +70,19 @@ def test_outer_web_taint_reaches_an_inner_document(
     assert decision.retrieval_weight == pytest.approx(0.3)
 
 
-def test_unknown_source_is_quarantined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_context_without_a_source_is_the_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fw = _open(tmp_path, monkeypatch)
     with fw.context("user-42", "s-981"):
-        decision = fw.check(_record("no mark", "facts"))
+        decision = fw.check(_record("I prefer replies in Bahasa", "preferences"))
+    assert decision.action == "allow"
+    assert decision.rule_id == "allow-user"
+
+
+def test_no_context_is_quarantined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fw = _open(tmp_path, monkeypatch)
+    decision = fw.check(_record("no mark", "facts"))
     assert decision.action == "quarantine"
     assert decision.rule_id == "default"
 

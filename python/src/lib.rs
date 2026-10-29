@@ -72,6 +72,27 @@ impl Firewall {
         Ok(Decision::from_core(decision))
     }
 
+    /// Return the ids that `reads` keeps. Does not append to the log.
+    fn filter_read_ids(&self, records: &Bound<'_, PyList>) -> PyResult<Vec<String>> {
+        let mut memories = Vec::new();
+        let mut principal = String::new();
+        let mut session = String::new();
+        for item in records.iter() {
+            let dict = item
+                .cast::<PyDict>()
+                .map_err(|_| PyValueError::new_err("each record must be a dict"))?;
+            if principal.is_empty() {
+                principal = dict_string(dict, "_principal")?;
+                session = dict_string(dict, "_session")?;
+            }
+            memories.push(memory_from_dict(&self.inner, dict)?);
+        }
+        let kept = self
+            .inner
+            .filter_reads(&memories, &Context::new(principal, session));
+        Ok(kept.iter().map(|record| record.id.to_string()).collect())
+    }
+
     /// Release a quarantined record.
     fn approve(&self, id: &str) -> PyResult<()> {
         self.inner.approve(parse_id(id)?).map_err(audit_error)

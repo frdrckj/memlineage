@@ -13,7 +13,12 @@ name = "_core"
 crate-type = ["cdylib"]
 
 [dependencies]
+memlineage-cli = { path = "../crates/memlineage-cli", version = "0.1.0" }
 memlineage-core = { path = "../crates/memlineage-core", version = "0.1.0" }
 pyo3.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+
+[[bin]]
+name = "memlineage"
+path = "src/bin/memlineage.rs"

@@ -2,6 +2,7 @@
 
 from contextlib import AbstractContextManager
 from typing import Any
+from uuid import uuid4
 
 from memlineage._context import ActiveWrite, Source, context, current, source
 from memlineage._core import Decision, MemlineageError
@@ -37,6 +38,19 @@ class Firewall:
         Without a `provenance` entry, the active context supplies the source.
         """
         return self._inner.check(_prepare(record))
+
+    def filter_reads(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop records the policy hides. Does not append to the log."""
+        prepared: list[dict[str, Any]] = []
+        for record in records:
+            item = _prepare(dict(record))
+            if "id" not in item:
+                item["id"] = str(uuid4())
+            prepared.append(item)
+        allowed = set(self._inner.filter_read_ids(prepared))
+        return [
+            record for record, item in zip(records, prepared, strict=True) if item["id"] in allowed
+        ]
 
     def approve(self, record_id: str) -> None:
         """Release a quarantined record."""

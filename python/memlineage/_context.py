@@ -81,7 +81,8 @@ def current() -> ActiveWrite:
         if tag is not None:
             tags.add(tag)
     if not frame.sources:
-        return ActiveWrite(frame.principal, frame.session, "unknown", "", frozenset())
+        # A context with no source block is the principal's own text.
+        return ActiveWrite(frame.principal, frame.session, "user", "", frozenset())
     inner = frame.sources[-1]
     return ActiveWrite(
         frame.principal,
