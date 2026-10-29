@@ -30,3 +30,15 @@ jobs:
           args: --release --out dist
           working-directory: python
           manylinux: auto
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+        with:
+          target: ${{ matrix.target }}
+          args: --release --bindings bin --out dist-bin
+          working-directory: python
+          manylinux: auto
+      - name: pack the command into the wheel
+        shell: bash
+        run: |
+          py=python3
+          command -v python3 >/dev/null || py=python
+          "$py" python/pack_cli.py python/dist/*.whl python/dist-bin/*.whl

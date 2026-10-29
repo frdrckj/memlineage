@@ -62,7 +62,9 @@ jobs:
         run: ruff check . && ruff format --check .
       - name: mypy
         working-directory: python
-        run: mypy --strict memlineage tests
+        run: mypy --strict memlineage tests pack_cli.py
+      - name: command
+        run: cargo build -p memlineage-py --bin memlineage
       - name: pytest
         working-directory: python
         run: pytest

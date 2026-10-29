@@ -1,0 +1,171 @@
+# Tag v* publishes. Create the pypi and crates-io environments, and the
+# trusted publisher on each registry, before the first tag.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: wheel ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          working-directory: python
+          manylinux: auto
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+        with:
+          target: ${{ matrix.target }}
+          args: --release --bindings bin --out dist-bin
+          working-directory: python
+          manylinux: auto
+      - name: pack the command into the wheel
+        shell: bash
+        run: |
+          py=python3
+          command -v python3 >/dev/null || py=python
+          "$py" python/pack_cli.py python/dist/*.whl python/dist-bin/*.whl
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: wheel-${{ matrix.target }}
+          path: python/dist/*.whl
+
+  pypi:
+    name: pypi
+    needs: wheels
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/*
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
+        with:
+          packages-dir: dist
+
+  crates:
+    name: crates.io
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      - name: tag matches the crate
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(awk '/^\[workspace.package\]/{p=1} p && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)
+          test "$version" = "${GITHUB_REF_NAME#v}"
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9
+        id: auth
+      - name: publish core
+        run: cargo publish -p memlineage-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      - name: wait for the index
+        run: |
+          version=$(awk '/^\[workspace.package\]/{p=1} p && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)
+          for _ in $(seq 1 30); do
+            body=$(curl -fsS -A memlineage-release https://crates.io/api/v1/crates/memlineage-core || true)
+            if printf '%s' "$body" | grep -Eq "\"num\": ?\"${version}\""; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - name: publish the commands
+        run: |
+          cargo publish -p memlineage-cli
+          cargo publish -p memlineage-mcp-proxy
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  binaries:
+    name: binary ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      - name: build
+        run: |
+          cargo build --release -p memlineage-cli --bin memlineage
+          cargo build --release -p memlineage-mcp-proxy --bin memlineage-mcp-proxy
+      - name: name the files
+        shell: bash
+        run: |
+          triple=$(rustc -vV | awk '/^host:/{print $2}')
+          mkdir -p dist
+          if [ -f target/release/memlineage.exe ]; then
+            cp target/release/memlineage.exe "dist/memlineage-${triple}.exe"
+            cp target/release/memlineage-mcp-proxy.exe "dist/memlineage-mcp-proxy-${triple}.exe"
+          else
+            cp target/release/memlineage "dist/memlineage-${triple}"
+            cp target/release/memlineage-mcp-proxy "dist/memlineage-mcp-proxy-${triple}"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: bin-${{ matrix.os }}
+          path: dist/*
+
+  github:
+    name: github release
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/*
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME"
