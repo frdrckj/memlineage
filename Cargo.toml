@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/memlineage-core"]
+members = ["crates/memlineage-core", "python"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,3 +19,4 @@ uuid = { version = "1", features = ["v7", "serde"] }
 thiserror = "2"
 proptest = "1"
 tempfile = "3"
+pyo3 = { version = "0.30", features = ["abi3-py310", "extension-module"] }

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "memlineage"
+version = "0.1.0"
+description = "Provenance and taint checks for agent memory."
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Frederick Jerusha" }]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13"]
+
+[tool.maturin]
+module-name = "memlineage._core"
+python-source = "."
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["memlineage"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

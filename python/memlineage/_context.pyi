@@ -1,0 +1,36 @@
+from contextlib import AbstractContextManager
+
+class Source:
+    kind: str
+    ref: str
+    def __init__(self, kind: str, ref: str) -> None: ...
+    @staticmethod
+    def web(url: str) -> Source: ...
+    @staticmethod
+    def tool(name: str) -> Source: ...
+    @staticmethod
+    def document(path: str) -> Source: ...
+    @staticmethod
+    def user() -> Source: ...
+    @staticmethod
+    def system() -> Source: ...
+    def tag(self) -> str | None: ...
+
+class ActiveWrite:
+    principal: str
+    session: str
+    source_kind: str
+    source_ref: str
+    taint: frozenset[str]
+    def __init__(
+        self,
+        principal: str,
+        session: str,
+        source_kind: str,
+        source_ref: str,
+        taint: frozenset[str],
+    ) -> None: ...
+
+def current() -> ActiveWrite: ...
+def context(principal: str, session: str) -> AbstractContextManager[None]: ...
+def source(mark: Source) -> AbstractContextManager[None]: ...
