@@ -1,5 +1,6 @@
-# Tag v* publishes. Create the pypi and crates-io environments, and the
-# trusted publisher on each registry, before the first tag.
+# Tag v* publishes. Before the first tag: create the pypi and crates-io
+# environments, add the PyPI trusted publisher, and put CARGO_REGISTRY_TOKEN
+# in the crates-io environment.
 
 name: release
 
@@ -55,9 +56,24 @@ jobs:
           name: wheel-${{ matrix.target }}
           path: python/dist/*.whl
 
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: python
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: wheel-sdist
+          path: python/dist/*.tar.gz
+
   pypi:
     name: pypi
-    needs: wheels
+    needs: [wheels, sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -82,7 +98,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
-      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -92,12 +107,10 @@ jobs:
         run: |
           version=$(awk '/^\[workspace.package\]/{p=1} p && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)
           test "$version" = "${GITHUB_REF_NAME#v}"
-      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9
-        id: auth
       - name: publish core
         run: cargo publish -p memlineage-core
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: wait for the index
         run: |
           version=$(awk '/^\[workspace.package\]/{p=1} p && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)
@@ -114,7 +127,7 @@ jobs:
           cargo publish -p memlineage-cli
           cargo publish -p memlineage-mcp-proxy
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   binaries:
     name: binary ${{ matrix.os }}
