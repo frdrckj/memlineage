@@ -1,0 +1,21 @@
+[package]
+name = "memlineage-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "Command line for the memlineage audit log."
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+memlineage-core = { path = "../memlineage-core", version = "0.1.0" }
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "memlineage"
+path = "src/main.rs"

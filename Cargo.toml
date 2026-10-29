@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/memlineage-core", "python"]
+members = [
+    "crates/memlineage-core",
+    "crates/memlineage-cli",
+    "crates/memlineage-mcp-proxy",
+    "python",
+]
 
 [workspace.package]
 version = "0.1.0"
