@@ -1,6 +1,7 @@
 use crate::audit::{AuditError, AuditLog, BrokenLink};
-use crate::model::{Context, Decision, MemoryRecord};
+use crate::model::{Context, Decision, MemoryRecord, Provenance};
 use crate::policy::{fail_closed, Policy};
+use crate::provenance::{build_provenance, ParentRef, SourceMark, TrustTable};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -67,10 +68,57 @@ impl Firewall {
         self.log.verify()
     }
 
+    /// Build provenance from the loaded trust map.
+    ///
+    /// A broken policy file uses an empty trust map, so missing keys stay
+    /// `untrusted`. The write is still quarantined by `check_and_log`.
+    pub fn provenance_for(
+        &self,
+        content: &str,
+        source: Option<&SourceMark>,
+        principal: &str,
+        session_id: &str,
+        parents: &[ParentRef],
+    ) -> Provenance {
+        self.with_trust(|table| {
+            build_provenance(source, principal, session_id, parents, content, table)
+        })
+    }
+
+    fn with_trust<T>(&self, use_table: impl FnOnce(&TrustTable) -> T) -> T {
+        match &self.policy {
+            LoadedPolicy::Ready(policy) => use_table(policy.trust()),
+            LoadedPolicy::Closed => use_table(&TrustTable::default()),
+        }
+    }
+
     fn decide(&self, record: &MemoryRecord, ctx: &Context) -> Decision {
         match &self.policy {
             LoadedPolicy::Ready(policy) => policy.check(record, ctx),
             LoadedPolicy::Closed => fail_closed(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SourceKind;
+    use crate::provenance::SourceMark;
+
+    #[test]
+    fn provenance_for_uses_the_policy_trust_map() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let firewall = Firewall::open(
+            include_str!("../tests/fixtures/memlineage.yaml"),
+            &dir.path().join("audit.db"),
+        )
+        .expect("open");
+        let mark = SourceMark::web("https://example.test").with_extra_taint(["document"]);
+        let provenance = firewall.provenance_for("page", Some(&mark), "user-42", "s", &[]);
+        assert_eq!(provenance.source_kind, SourceKind::Web);
+        assert_eq!(provenance.trust, crate::model::TrustLevel::Untrusted);
+        assert!(provenance.taint.contains("web"));
+        assert!(provenance.taint.contains("document"));
     }
 }

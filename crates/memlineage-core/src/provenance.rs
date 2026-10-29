@@ -52,10 +52,14 @@ impl TrustTable {
 }
 
 /// Source mark placed around a write.
+///
+/// `extra_taint` is unioned with this mark's own tag. Nested source blocks use
+/// it so an inner mark keeps the outer tags.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceMark {
     pub kind: SourceKind,
     pub source_ref: String,
+    pub extra_taint: BTreeSet<String>,
 }
 
 impl SourceMark {
@@ -90,10 +94,17 @@ impl SourceMark {
         Self::bare(SourceKind::Agent)
     }
 
+    /// Add tags from source blocks wrapped around this one.
+    pub fn with_extra_taint(mut self, tags: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.extra_taint.extend(tags.into_iter().map(Into::into));
+        self
+    }
+
     fn bare(kind: SourceKind) -> Self {
         Self {
             kind,
             source_ref: String::new(),
+            extra_taint: BTreeSet::new(),
         }
     }
 
@@ -101,6 +112,7 @@ impl SourceMark {
         Self {
             kind,
             source_ref: source_ref.into(),
+            extra_taint: BTreeSet::new(),
         }
     }
 }
@@ -132,7 +144,7 @@ pub fn build_provenance(
     };
     Provenance {
         trust: resolve_trust(kind, &source_ref, parents, trust),
-        taint: union_taint(kind, &source_ref, parents),
+        taint: union_taint(source, parents),
         source_kind: kind,
         source_ref,
         principal: principal.to_string(),
@@ -163,10 +175,13 @@ fn own_tag(kind: SourceKind, source_ref: &str) -> Option<String> {
     }
 }
 
-fn union_taint(kind: SourceKind, source_ref: &str, parents: &[ParentRef]) -> BTreeSet<String> {
+fn union_taint(source: Option<&SourceMark>, parents: &[ParentRef]) -> BTreeSet<String> {
     let mut taint = BTreeSet::new();
-    if let Some(tag) = own_tag(kind, source_ref) {
-        taint.insert(tag);
+    if let Some(mark) = source {
+        if let Some(tag) = own_tag(mark.kind, &mark.source_ref) {
+            taint.insert(tag);
+        }
+        taint.extend(mark.extra_taint.iter().cloned());
     }
     for parent in parents {
         taint.extend(parent.provenance.taint.iter().cloned());
@@ -258,6 +273,16 @@ mod tests {
         assert_eq!(built.source_kind, SourceKind::User);
         assert_eq!(built.trust, TrustLevel::Trusted);
         assert!(built.taint.is_empty());
+    }
+
+    #[test]
+    fn extra_taint_is_kept_with_the_marks_own_tag() {
+        let mark = SourceMark::tool("browser").with_extra_taint(["web"]);
+        let built = build_provenance(Some(&mark), "user-42", "s-1", &[], "page", &sample_table());
+        assert!(built.taint.contains("tool:browser"));
+        assert!(built.taint.contains("web"));
+        assert_eq!(built.source_kind, SourceKind::Tool);
+        assert_eq!(built.source_ref, "browser");
     }
 
     #[test]
