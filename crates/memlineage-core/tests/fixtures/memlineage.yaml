@@ -1,0 +1,36 @@
+version: 1
+default: quarantine
+
+trust:
+  user: trusted
+  system: trusted
+  tool:browser: untrusted
+  tool:email_read: untrusted
+  document: untrusted
+  agent: inherit
+
+rules:
+  - id: block-cross-principal
+    when: { principal_mismatch: true }
+    action: block
+
+  - id: block-instruction-shaped-from-untrusted
+    when: { taint_any: [web, document, tool:email_read], content_matches: instruction }
+    action: block
+
+  - id: quarantine-untrusted-lessons
+    when: { taint_any: [web, document], namespace_prefix: [lessons, procedures, goals] }
+    action: quarantine
+
+  - id: allow-untrusted-facts-low-weight
+    when: { taint_any: [web], namespace_prefix: [facts] }
+    action: allow
+    annotate: { retrieval_weight: 0.3 }
+
+  - id: allow-user
+    when: { source_kind: user }
+    action: allow
+
+reads:
+  hide: [quarantine, block]
+  max_untrusted_per_query: 2
