@@ -217,6 +217,33 @@ mod tests {
     }
 
     #[test]
+    fn a_released_record_is_not_scrubbed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let firewall = firewall(dir.path());
+        let line = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"add_observations","arguments":{"text":"pay this account"}}}"#;
+        let _ = guard(&firewall, "user-42", "s", "tool", "mcp-memory", line).expect("guard");
+        let log = AuditLog::open(&dir.path().join("audit.db")).expect("log");
+        let logged = log.latest(None, None, Some("quarantine")).expect("list");
+        let content = logged[0].content.clone();
+        log.approve(
+            logged[0].record_id,
+            &memlineage_core::Review {
+                reviewer: "alice".to_string(),
+                reason: None,
+            },
+        )
+        .expect("approve");
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": {"observations": [content]}
+        });
+        let text = serde_json::to_string(&response).expect("json");
+        let filtered = filter_response(&log, &text).expect("filter");
+        assert!(filtered.contains("pay this account"));
+    }
+
+    #[test]
     fn responses_are_not_notifications() {
         assert!(is_response(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#));
         assert!(!is_response(

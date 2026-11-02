@@ -1,6 +1,6 @@
 use memlineage_core::{
-    content_sha256, Action, AuditError, Context, Firewall as CoreFirewall, MemoryRecord, ParentRef,
-    Provenance, SourceKind, SourceMark, TrustLevel,
+    content_sha256, Action, AuditError, Context, Firewall as CoreFirewall, LogRecord, MemoryRecord,
+    ParentRef, Provenance, Review, SourceKind, SourceMark, TrustLevel,
 };
 use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -94,13 +94,38 @@ impl Firewall {
     }
 
     /// Release a quarantined record.
-    fn approve(&self, id: &str) -> PyResult<()> {
-        self.inner.approve(parse_id(id)?).map_err(audit_error)
+    fn approve(&self, id: &str, reviewer: &str, reason: Option<&str>) -> PyResult<()> {
+        let review = review_of(reviewer, reason)?;
+        self.inner
+            .approve(parse_id(id)?, &review)
+            .map_err(audit_error)
     }
 
     /// Keep a quarantined record out.
-    fn reject(&self, id: &str) -> PyResult<()> {
-        self.inner.reject(parse_id(id)?).map_err(audit_error)
+    fn reject(&self, id: &str, reviewer: &str, reason: Option<&str>) -> PyResult<()> {
+        let review = review_of(reviewer, reason)?;
+        self.inner
+            .reject(parse_id(id)?, &review)
+            .map_err(audit_error)
+    }
+
+    /// Held records whose quarantine row still matches the log.
+    fn pending<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let records = self.inner.pending().map_err(audit_error)?;
+        records_list(py, &records)
+    }
+
+    /// Approved records for one store that have not been applied.
+    fn released<'py>(&self, py: Python<'py>, store: &str) -> PyResult<Bound<'py, PyList>> {
+        let records = self.inner.released(store).map_err(audit_error)?;
+        records_list(py, &records)
+    }
+
+    /// Record that the adapter wrote a released record into the store.
+    fn mark_applied(&self, id: &str, store: &str) -> PyResult<()> {
+        self.inner
+            .mark_applied(parse_id(id)?, store)
+            .map_err(audit_error)
     }
 }
 
@@ -317,11 +342,79 @@ fn io_error(err: std::io::Error) -> PyErr {
     }
 }
 
-fn audit_error(err: AuditError) -> PyErr {
-    match err {
-        AuditError::NotQuarantined(id) => {
-            MemlineageError::new_err(format!("record {id} is not quarantined"))
-        }
-        other => MemlineageError::new_err(other.to_string()),
+fn review_of(reviewer: &str, reason: Option<&str>) -> PyResult<Review> {
+    Review::new(reviewer, reason.map(str::to_string))
+        .map_err(|err| MemlineageError::new_err(err.to_string()))
+}
+
+fn records_list<'py>(py: Python<'py>, records: &[LogRecord]) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    for record in records {
+        list.append(record_dict(py, record)?)?;
     }
+    Ok(list)
+}
+
+fn record_dict<'py>(py: Python<'py>, record: &LogRecord) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("id", record.record_id.to_string())?;
+    dict.set_item("content", &record.content)?;
+    dict.set_item("store", &record.store)?;
+    dict.set_item("namespace", &record.namespace)?;
+    dict.set_item("key", &record.key)?;
+    dict.set_item("source_kind", kind_name(record.provenance.source_kind))?;
+    dict.set_item("source_ref", &record.provenance.source_ref)?;
+    dict.set_item("trust", trust_name(record.provenance.trust))?;
+    dict.set_item("principal", &record.provenance.principal)?;
+    dict.set_item("session_id", &record.provenance.session_id)?;
+    let parents: Vec<String> = record
+        .provenance
+        .parent_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    dict.set_item("parent_ids", parents)?;
+    let taint: Vec<&str> = record.provenance.taint.iter().map(String::as_str).collect();
+    dict.set_item("taint", taint)?;
+    dict.set_item(
+        "content_sha256",
+        hex_encode(&record.provenance.content_sha256),
+    )?;
+    dict.set_item("version", record.version)?;
+    Ok(dict)
+}
+
+fn kind_name(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::User => "user",
+        SourceKind::System => "system",
+        SourceKind::Tool => "tool",
+        SourceKind::Web => "web",
+        SourceKind::Document => "document",
+        SourceKind::Agent => "agent",
+        SourceKind::Unknown => "unknown",
+    }
+}
+
+fn trust_name(trust: TrustLevel) -> &'static str {
+    match trust {
+        TrustLevel::Hostile => "hostile",
+        TrustLevel::Untrusted => "untrusted",
+        TrustLevel::Verified => "verified",
+        TrustLevel::Trusted => "trusted",
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn audit_error(err: AuditError) -> PyErr {
+    MemlineageError::new_err(err.to_string())
 }

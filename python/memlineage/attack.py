@@ -52,7 +52,7 @@ def decision_for(firewall: Firewall, scenario: dict[str, Any], store: str) -> st
         "principal": principal,
     }
     kind = str(scenario.get("kind", "write"))
-    if kind == "derive":
+    if kind in {"derive", "derive_released"}:
         record["provenance"] = {
             "source_kind": "agent",
             "source_ref": "",

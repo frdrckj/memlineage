@@ -67,4 +67,10 @@ Rules are first match. Every field set under `when` must hold.
 
 `reads.hide` drops those actions from later reads. `max_untrusted_per_query` caps how many untrusted records one read may return. A read does not append to the log.
 
-Allow does not insert a quarantine row. A later allow clears an existing quarantine row. A block row is not approvable. `review` lists quarantine rows only.
+Allow does not insert a quarantine row. A later allow clears an existing quarantine row. A block row is not approvable. `review` lists records whose latest event is still quarantine.
+
+A release does not clear taint. The reviewer vouched for one record. A later write that cites it keeps the parent taint and the lower trust. That child can be quarantined again.
+
+The quarantine table is an index. `verify` checks each row against the latest event. A row that was edited, or a held event with no row, fails `verify`.
+
+`approve` sets the row to `released`. The adapter writes the record, then `mark_applied` sets the row to `allow`. `reject` sets the row to `rejected`.

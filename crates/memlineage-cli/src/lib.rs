@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use memlineage_core::{load_suite, run_suite, AuditLog, LogRecord};
+use memlineage_core::{load_suite, run_suite, AuditLog, LogRecord, Review};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use uuid::Uuid;
@@ -35,6 +35,9 @@ enum Command {
     },
     /// List quarantined records, or approve or reject one.
     Review {
+        /// Print one JSON object per line.
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
         action: Option<ReviewAction>,
     },
@@ -71,10 +74,28 @@ enum AttackCmd {
 
 #[derive(Subcommand)]
 enum ReviewAction {
+    /// Show one held record.
+    Show { id: String },
     /// Release a quarantined record.
-    Approve { id: String },
+    Approve {
+        id: String,
+        /// Reviewer name. Defaults to MEMLINEAGE_REVIEWER, then USER.
+        #[arg(long)]
+        by: Option<String>,
+        /// Why the record was released.
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Keep a quarantined record out.
-    Reject { id: String },
+    Reject {
+        id: String,
+        /// Reviewer name. Defaults to MEMLINEAGE_REVIEWER, then USER.
+        #[arg(long)]
+        by: Option<String>,
+        /// Why the record was rejected.
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 /// Run the command line and print the result.
@@ -126,22 +147,39 @@ pub fn execute(args: &[&str]) -> Result<String, String> {
             let records = log.changed_since(&since).map_err(|err| err.to_string())?;
             Ok(format_diff(&records))
         }
-        Command::Review { action } => match action {
+        Command::Review { json, action } => match action {
             None => {
                 let records = log.pending().map_err(|err| err.to_string())?;
                 if records.is_empty() {
                     Ok("none\n".to_string())
+                } else if json {
+                    Ok(records.iter().map(format_review_json).collect())
                 } else {
                     Ok(records.iter().map(format_review).collect())
                 }
             }
-            Some(ReviewAction::Approve { id }) => {
-                log.approve(parse_id(&id)?).map_err(|err| err.to_string())?;
-                Ok(format!("approved {id}\n"))
+            Some(ReviewAction::Show { id }) => {
+                let id = parse_id(&id)?;
+                let Some(record) = log.show(id).map_err(|err| err.to_string())? else {
+                    return Err(format!("no record {id}"));
+                };
+                Ok(format_show(&record))
             }
-            Some(ReviewAction::Reject { id }) => {
-                log.reject(parse_id(&id)?).map_err(|err| err.to_string())?;
-                Ok(format!("rejected {id}\n"))
+            Some(ReviewAction::Approve { id, by, reason }) => {
+                let parsed = parse_id(&id)?;
+                let review = reviewer(by, reason)?;
+                log.approve(parsed, &review)
+                    .map_err(|err| err.to_string())?;
+                Ok(format!(
+                    "released {id} by {}, apply with the adapter.\n",
+                    review.reviewer
+                ))
+            }
+            Some(ReviewAction::Reject { id, by, reason }) => {
+                let parsed = parse_id(&id)?;
+                let review = reviewer(by, reason)?;
+                log.reject(parsed, &review).map_err(|err| err.to_string())?;
+                Ok(format!("rejected {id} by {}\n", review.reviewer))
             }
         },
         Command::Rollback { to, taint } => {
@@ -200,15 +238,60 @@ fn parse_id(text: &str) -> Result<Uuid, String> {
     Uuid::parse_str(text).map_err(|_| format!("invalid record id {text}"))
 }
 
+fn reviewer(by: Option<String>, reason: Option<String>) -> Result<Review, String> {
+    let name = by
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("MEMLINEAGE_REVIEWER").ok())
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_default();
+    Review::new(name, reason).map_err(str::to_string)
+}
+
 fn format_review(record: &LogRecord) -> String {
+    let taint = record
+        .provenance
+        .taint
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{} {} {} {} {}\n",
+        "{} {} {} {} taint={taint} {} {}\n",
         record.record_id,
-        record.action,
         record.rule_id,
+        source_name(record),
         record.provenance.source_ref,
-        record.provenance.principal
+        record.provenance.principal,
+        record.created_at
     )
+}
+
+fn format_review_json(record: &LogRecord) -> String {
+    let taint: Vec<&str> = record.provenance.taint.iter().map(String::as_str).collect();
+    format!(
+        "{{\"id\":\"{}\",\"rule\":\"{}\",\"source_kind\":\"{}\",\"source_ref\":\"{}\",\"taint\":{},\"principal\":\"{}\",\"created_at\":\"{}\"}}\n",
+        record.record_id,
+        record.rule_id,
+        source_name(record),
+        record.provenance.source_ref,
+        serde_json_array(&taint),
+        record.provenance.principal,
+        record.created_at
+    )
+}
+
+fn serde_json_array(items: &[&str]) -> String {
+    let mut out = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(item);
+        out.push('"');
+    }
+    out.push(']');
+    out
 }
 
 fn format_row(record: &LogRecord) -> String {
@@ -245,7 +328,7 @@ fn format_show(record: &LogRecord) -> String {
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
+    let mut text = format!(
         "id: {}\nstore: {}\nnamespace: {}\naction: {}\nrule: {}\nsource: {:?} {}\ntrust: {:?}\nprincipal: {}\nsession: {}\ntaint: {}\nparents: {}\ncontent:\n{}\n",
         record.record_id,
         record.store,
@@ -260,7 +343,14 @@ fn format_show(record: &LogRecord) -> String {
         taint,
         parents,
         record.content
-    )
+    );
+    if let Some(reviewer) = &record.reviewer {
+        text.push_str(&format!("reviewer: {reviewer}\n"));
+    }
+    if let Some(reason) = &record.reason {
+        text.push_str(&format!("reason: {reason}\n"));
+    }
+    text
 }
 
 fn format_diff(records: &[LogRecord]) -> String {
@@ -355,9 +445,14 @@ mod tests {
             "review",
             "approve",
             &id.to_string(),
+            "--by",
+            "alice",
+            "--reason",
+            "checked",
         ])
         .expect("approve");
-        assert!(approved.contains("approved"));
+        assert!(approved.contains("released"));
+        assert!(approved.contains("alice"));
 
         let verified = execute(&["memlineage", "--db", db, "verify"]).expect("verify");
         assert_eq!(verified, "ok\n");
@@ -383,6 +478,6 @@ mod tests {
         ])
         .expect("attack");
         assert!(text.contains("ML-010"));
-        assert!(text.contains("10 passed"));
+        assert!(text.contains("12 passed"));
     }
 }

@@ -1,9 +1,11 @@
 """Shared record shape for the store adapters."""
 
+import hashlib
 import json
 import uuid
 from typing import Any
 
+from memlineage import MemlineageError
 from memlineage._context import ActiveWrite
 
 
@@ -42,6 +44,28 @@ def provenance_fields(active: ActiveWrite, principal: str, session: str) -> dict
         "parent_ids": [],
         "taint": sorted(active.taint),
     }
+
+
+def stored_provenance(record: dict[str, Any]) -> dict[str, Any]:
+    """Provenance taken from a released audit record, not the current source block."""
+    parents = record.get("parent_ids") or []
+    taint = record.get("taint") or []
+    return {
+        "source_kind": record["source_kind"],
+        "source_ref": record["source_ref"],
+        "trust": record["trust"],
+        "principal": record["principal"],
+        "session_id": record["session_id"],
+        "parent_ids": list(parents),
+        "taint": list(taint),
+    }
+
+
+def require_hash(record: dict[str, Any]) -> None:
+    """Refuse a released record whose text no longer matches its provenance."""
+    digest = hashlib.sha256(str(record["content"]).encode()).hexdigest()
+    if digest != record["content_sha256"]:
+        raise MemlineageError("content hash does not match provenance")
 
 
 def decision_dict(action: str, rule_id: str, weight: float | None) -> dict[str, Any]:

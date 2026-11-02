@@ -16,7 +16,7 @@ SCENARIOS = Path(__file__).resolve().parents[2] / "attacks" / "scenarios"
 def test_core_decisions_match_the_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     firewall = _firewall(tmp_path, monkeypatch)
     for scenario in load_suite(SCENARIOS):
-        if scenario["kind"] == "tamper":
+        if scenario["kind"] in {"tamper", "release_skip"}:
             continue
         actual = decision_for(firewall, scenario, "langgraph")
         assert actual == scenario["expected"], scenario["id"]
@@ -85,4 +85,4 @@ def test_cli_suite_passes_on_all_stores() -> None:
             text=True,
         )
         assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert "10 passed" in completed.stdout
+        assert "12 passed" in completed.stdout

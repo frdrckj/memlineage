@@ -52,13 +52,27 @@ class Firewall:
             record for record, item in zip(records, prepared, strict=True) if item["id"] in allowed
         ]
 
-    def approve(self, record_id: str) -> None:
+    def approve(self, record_id: str, reviewer: str, reason: str | None = None) -> None:
         """Release a quarantined record."""
-        self._inner.approve(record_id)
+        self._inner.approve(record_id, reviewer, reason)
 
-    def reject(self, record_id: str) -> None:
+    def reject(self, record_id: str, reviewer: str, reason: str | None = None) -> None:
         """Keep a quarantined record out."""
-        self._inner.reject(record_id)
+        self._inner.reject(record_id, reviewer, reason)
+
+    def pending(self) -> list[dict[str, Any]]:
+        """Held records whose quarantine row still matches the log."""
+        found: list[dict[str, Any]] = self._inner.pending()
+        return found
+
+    def released(self, store: str) -> list[dict[str, Any]]:
+        """Approved records for one store that have not been applied."""
+        found: list[dict[str, Any]] = self._inner.released(store)
+        return found
+
+    def mark_applied(self, record_id: str, store: str) -> None:
+        """Record that the adapter wrote a released record into the store."""
+        self._inner.mark_applied(record_id, store)
 
     def context(self, principal: str, session: str) -> AbstractContextManager[None]:
         """Set the principal and session for writes in this block."""

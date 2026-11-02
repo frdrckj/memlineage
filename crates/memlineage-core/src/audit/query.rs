@@ -1,5 +1,6 @@
-use crate::audit::log::{AuditError, AuditLog, StoredEvent};
+use crate::audit::log::{expected_status, AuditError, AuditLog, StoredEvent};
 use crate::model::{Action, Decision, MemoryRecord, Provenance};
+use rusqlite::OptionalExtension;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -17,6 +18,8 @@ pub struct LogRecord {
     pub action: String,
     pub rule_id: String,
     pub created_at: String,
+    pub reviewer: Option<String>,
+    pub reason: Option<String>,
 }
 
 impl AuditLog {
@@ -90,20 +93,45 @@ impl AuditLog {
         Ok(out)
     }
 
-    /// Records waiting in the quarantine table.
+    /// Records whose latest event is still a quarantine decision, and whose row agrees.
     pub fn pending(&self) -> Result<Vec<LogRecord>, AuditError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT record_id FROM quarantine WHERE status = 'quarantine' ORDER BY event_id",
-        )?;
-        let ids = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut waiting = Vec::new();
-        for id in ids {
-            let id = Uuid::parse_str(&id?).map_err(|_| AuditError::Corrupt(0))?;
-            if let Some(record) = self.show(id)? {
+        for record in self.latest(None, None, Some("quarantine"))? {
+            if self.row_agrees(&record)? {
                 waiting.push(record);
             }
         }
         Ok(waiting)
+    }
+
+    /// Approved records for `store` that an adapter has not applied yet.
+    pub fn released(&self, store: &str) -> Result<Vec<LogRecord>, AuditError> {
+        let mut waiting = Vec::new();
+        for record in self.latest(Some(store), None, Some("allow"))? {
+            if record.rule_id != "approve" {
+                continue;
+            }
+            if self.row_agrees(&record)? {
+                waiting.push(record);
+            }
+        }
+        Ok(waiting)
+    }
+
+    fn row_agrees(&self, record: &LogRecord) -> Result<bool, AuditError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT status, event_id FROM quarantine WHERE record_id = ?1",
+                rusqlite::params![record.record_id.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((status, event_id)) = row else {
+            return Ok(false);
+        };
+        Ok(event_id == record.event_id
+            && status == expected_status(&record.action, &record.rule_id))
     }
 
     /// Append a block event for allowed records newer than `cutoff` that carry `taint`.
@@ -160,6 +188,8 @@ fn to_log(event: StoredEvent) -> Result<LogRecord, AuditError> {
         action: event.action,
         rule_id: event.rule_id,
         created_at: event.created_at,
+        reviewer: event.reviewer,
+        reason: event.reason,
     })
 }
 

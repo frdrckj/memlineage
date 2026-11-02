@@ -6,9 +6,16 @@ has the text to store. The wrapper does not call an LLM itself.
 
 from typing import Any
 
-from memlineage import Firewall
+from memlineage import Firewall, MemlineageError
 from memlineage._context import current
-from memlineage.adapters.base import decision_dict, provenance_fields, stable_id, text_of
+from memlineage.adapters.base import (
+    decision_dict,
+    provenance_fields,
+    require_hash,
+    stable_id,
+    stored_provenance,
+    text_of,
+)
 
 
 class GuardedMemory:
@@ -67,6 +74,29 @@ class GuardedMemory:
                 )
             }
         return self._inner.update(memory_id, text=text, **kwargs)
+
+    def apply_released(self) -> list[str]:
+        """Write released records into Mem0, then mark each one applied."""
+        applied: list[str] = []
+        for record in self._firewall.released("mem0"):
+            require_hash(record)
+            try:
+                self._inner.add(
+                    str(record["content"]),
+                    user_id=str(record["principal"]),
+                    metadata={"memlineage": stored_provenance(record)},
+                    infer=False,
+                )
+            except Exception as err:
+                raise MemlineageError(str(err)) from err
+            self._firewall.mark_applied(str(record["id"]), "mem0")
+            applied.append(str(record["id"]))
+        return applied
+
+    def release(self, record_id: str, reviewer: str, reason: str | None = None) -> list[str]:
+        """Approve one record and apply every release waiting on this store."""
+        self._firewall.approve(record_id, reviewer, reason)
+        return self.apply_released()
 
     def delete(self, memory_id: str) -> Any:
         """Log the delete and pass it through when the decision is allow."""

@@ -5,9 +5,9 @@ from typing import Any
 
 from langgraph.store.base import BaseStore, Item, SearchItem
 
-from memlineage import Firewall
+from memlineage import Firewall, MemlineageError
 from memlineage._context import current
-from memlineage.adapters.base import provenance_fields, stable_id
+from memlineage.adapters.base import provenance_fields, require_hash, stable_id, stored_provenance
 
 _META = "_memlineage"
 
@@ -87,6 +87,27 @@ class GuardedStore(BaseStore):
             for item, record in zip(items, records, strict=True)
             if record["id"] in allowed
         ]
+
+    def apply_released(self) -> list[str]:
+        """Write released records into the inner store, then mark each one applied."""
+        applied: list[str] = []
+        for record in self._firewall.released("langgraph"):
+            require_hash(record)
+            namespace = tuple(str(part) for part in record["namespace"])
+            key = str(record["key"] or record["id"])
+            value = {"text": record["content"], _META: stored_provenance(record)}
+            try:
+                self._inner.put(namespace, key, value)
+            except Exception as err:
+                raise MemlineageError(str(err)) from err
+            self._firewall.mark_applied(str(record["id"]), "langgraph")
+            applied.append(str(record["id"]))
+        return applied
+
+    def release(self, record_id: str, reviewer: str, reason: str | None = None) -> list[str]:
+        """Approve one record and apply every release waiting on this store."""
+        self._firewall.approve(record_id, reviewer, reason)
+        return self.apply_released()
 
     def delete(self, namespace: tuple[str, ...], key: str) -> None:
         """Log the delete and pass it through when the decision is allow."""

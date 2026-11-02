@@ -21,6 +21,8 @@ with firewall.context("user-42", "s-1"):
 
 Provenance is stored on the value under `_memlineage` and removed on read.
 
+`apply_released` writes records whose latest event is an approval. It keeps the original provenance. `release` approves one id and then applies. A store error leaves the record released so the next call can retry.
+
 ## Mem0
 
 ```python
@@ -35,7 +37,7 @@ with firewall.context("user-42", "s-1"):
 
 The installed line is Mem0 2.2. `add` is synchronous and still defaults to `infer=True`. Pass `infer=False` when you already have the text. The wrapper does not call a model. Search and `get_all` take `filters={"user_id": ...}`. The wrapper accepts `user_id` and writes that filter.
 
-The wrapper checks namespace `memories`. Provenance is stored in metadata under `memlineage` and rebuilt on read.
+The wrapper checks namespace `memories`. Provenance is stored in metadata under `memlineage` and rebuilt on read. `apply_released` and `release` do the same job as on the LangGraph store.
 
 Stable ids are `uuid5` of `memlineage:<store>:<namespace>:<key>`.
 

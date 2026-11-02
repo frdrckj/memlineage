@@ -2,7 +2,7 @@
 
 use crate::model::{Action, Context, Decision, MemoryRecord};
 use crate::provenance::{ParentRef, SourceMark};
-use crate::{AuditLog, Firewall};
+use crate::{AuditLog, Firewall, Review};
 use rusqlite::params;
 use serde::Deserialize;
 use std::fs;
@@ -43,6 +43,10 @@ pub enum ScenarioKind {
     Read,
     Derive,
     Tamper,
+    /// Flip the quarantine row, then ask for records ready to apply.
+    ReleaseSkip,
+    /// Approve a web parent, then derive a child from it.
+    DeriveReleased,
 }
 
 /// Source block for a scenario.
@@ -140,6 +144,8 @@ fn run_in(db: &Path, scenario: &Scenario, store: &str) -> Result<ScenarioReport,
     let firewall = Firewall::open(POLICY, db).map_err(|err| AttackError::Run(err.to_string()))?;
     let actual = match scenario.kind {
         ScenarioKind::Tamper => tamper(&firewall, scenario, store, db)?,
+        ScenarioKind::ReleaseSkip => release_skip(&firewall, scenario, store, db)?,
+        ScenarioKind::DeriveReleased => derive_released(&firewall, scenario, store)?,
         ScenarioKind::Derive => derive(&firewall, scenario, store)?,
         ScenarioKind::Write | ScenarioKind::Read => {
             action_name(decide(&firewall, scenario, store)?).to_string()
@@ -197,6 +203,93 @@ fn derive(firewall: &Firewall, scenario: &Scenario, store: &str) -> Result<Strin
         &[ParentRef {
             id: parent_record.id,
             provenance: parent_record.provenance.clone(),
+        }],
+    );
+    let child = MemoryRecord {
+        id: Uuid::now_v7(),
+        store: store.to_string(),
+        namespace: scenario.namespace.clone(),
+        key: None,
+        content: scenario.input.clone(),
+        provenance,
+        version: 1,
+    };
+    let decision = firewall
+        .check_and_log(
+            &child,
+            &Context::new(&scenario.principal, &scenario.session),
+        )
+        .map_err(|err| AttackError::Run(err.to_string()))?;
+    Ok(action_name(decision).to_string())
+}
+
+fn release_skip(
+    firewall: &Firewall,
+    scenario: &Scenario,
+    store: &str,
+    db: &Path,
+) -> Result<String, AttackError> {
+    decide(firewall, scenario, store)?;
+    let log = AuditLog::open(db).map_err(|err| AttackError::Run(err.to_string()))?;
+    log.conn
+        .execute("UPDATE quarantine SET status = 'released'", [])
+        .map_err(|err| AttackError::Run(err.to_string()))?;
+    let ready = log
+        .released(store)
+        .map_err(|err| AttackError::Run(err.to_string()))?;
+    if !ready.is_empty() {
+        return Ok("applied".to_string());
+    }
+    match log
+        .verify()
+        .map_err(|err| AttackError::Run(err.to_string()))?
+    {
+        Some(_) => Ok("verify_failed".to_string()),
+        None => Ok("ok".to_string()),
+    }
+}
+
+fn derive_released(
+    firewall: &Firewall,
+    scenario: &Scenario,
+    store: &str,
+) -> Result<String, AttackError> {
+    let parent = scenario
+        .parent
+        .as_ref()
+        .ok_or_else(|| AttackError::Run(format!("{} needs a parent", scenario.id)))?;
+    let parent_record = memory(
+        firewall,
+        scenario,
+        store,
+        &parent.input,
+        &parent.source,
+        Some(&parent.namespace),
+    )?;
+    firewall
+        .check_and_log(
+            &parent_record,
+            &Context::new(&scenario.principal, &scenario.session),
+        )
+        .map_err(|err| AttackError::Run(err.to_string()))?;
+    firewall
+        .approve(
+            parent_record.id,
+            &Review {
+                reviewer: "alice".to_string(),
+                reason: None,
+            },
+        )
+        .map_err(|err| AttackError::Run(err.to_string()))?;
+    let child_source = source_mark(&scenario.source)?;
+    let provenance = firewall.provenance_for(
+        &scenario.input,
+        child_source.as_ref(),
+        &scenario.principal,
+        &scenario.session,
+        &[ParentRef {
+            id: parent_record.id,
+            provenance: parent_record.provenance,
         }],
     );
     let child = MemoryRecord {
@@ -347,7 +440,7 @@ mod tests {
     #[test]
     fn core_suite_passes_for_each_store() {
         let scenarios = load_suite(&suite_dir(), "core").expect("suite");
-        assert_eq!(scenarios.len(), 10);
+        assert_eq!(scenarios.len(), 12);
         for store in ["mem0", "langgraph", "mcp-memory"] {
             let reports = run_suite(&scenarios, store).expect("run");
             let failed: Vec<_> = reports.iter().filter(|report| !report.passed()).collect();

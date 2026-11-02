@@ -243,8 +243,12 @@ fn approve_appends_and_a_second_approve_fails() {
     firewall
         .check_and_log(&row, &Context::new("user-42", "s"))
         .expect("log");
-    firewall.approve(row.id).expect("approve");
-    let err = firewall.approve(row.id).expect_err("twice");
+    let review = memlineage_core::Review {
+        reviewer: "alice".to_string(),
+        reason: None,
+    };
+    firewall.approve(row.id, &review).expect("approve");
+    let err = firewall.approve(row.id, &review).expect_err("twice");
     assert!(matches!(err, AuditError::NotQuarantined(_)));
     assert!(firewall.verify().expect("verify").is_none());
 }

@@ -1,5 +1,6 @@
+use crate::audit::LogRecord;
 use crate::audit::{AuditError, AuditLog, BrokenLink};
-use crate::model::{Context, Decision, MemoryRecord, Provenance};
+use crate::model::{Context, Decision, MemoryRecord, Provenance, Review};
 use crate::policy::{fail_closed, Policy};
 use crate::provenance::{build_provenance, ParentRef, SourceMark, TrustTable};
 use std::path::Path;
@@ -44,13 +45,28 @@ impl Firewall {
     }
 
     /// Release a quarantined record.
-    pub fn approve(&self, id: Uuid) -> Result<(), AuditError> {
-        self.log.approve(id)
+    pub fn approve(&self, id: Uuid, review: &Review) -> Result<(), AuditError> {
+        self.log.approve(id, review)
     }
 
     /// Keep a quarantined record out.
-    pub fn reject(&self, id: Uuid) -> Result<(), AuditError> {
-        self.log.reject(id)
+    pub fn reject(&self, id: Uuid, review: &Review) -> Result<(), AuditError> {
+        self.log.reject(id, review)
+    }
+
+    /// Records still held, when the quarantine row agrees with the log.
+    pub fn pending(&self) -> Result<Vec<LogRecord>, AuditError> {
+        self.log.pending()
+    }
+
+    /// Approved records for one store that have not been applied.
+    pub fn released(&self, store: &str) -> Result<Vec<LogRecord>, AuditError> {
+        self.log.released(store)
+    }
+
+    /// Record that the adapter wrote a released record into the store.
+    pub fn mark_applied(&self, id: Uuid, store: &str) -> Result<(), AuditError> {
+        self.log.mark_applied(id, store)
     }
 
     /// Apply `reads.hide` and `max_untrusted_per_query`.

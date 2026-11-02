@@ -23,4 +23,6 @@ with firewall.context("user-42", "s-1"):
 
 That write is quarantined. The same call with `Source.user()` and a preference is allowed.
 
+`firewall.approve(record_id, reviewer)` releases a held write. The adapter's `apply_released` writes it into the store and keeps the original provenance.
+
 The repository is https://github.com/frdrckj/memlineage.

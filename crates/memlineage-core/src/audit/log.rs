@@ -1,5 +1,5 @@
 use crate::hash::{canonical_json, chain_hash, HashError};
-use crate::model::{Action, Decision, MemoryRecord, Provenance};
+use crate::model::{Action, Decision, MemoryRecord, Provenance, Review};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::path::Path;
@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS events (
     retrieval_weight TEXT,
     prev_hash BLOB NOT NULL,
     hash BLOB NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    reviewer TEXT,
+    reason TEXT
 );
 
 CREATE TRIGGER IF NOT EXISTS events_no_update
@@ -57,8 +59,14 @@ pub enum AuditError {
     #[error("{0}")]
     Hash(#[from] HashError),
     /// `approve` or `reject` was asked for a row that is not waiting.
-    #[error("record {0} is not quarantined")]
-    NotQuarantined(Uuid),
+    #[error("{0}")]
+    NotQuarantined(String),
+    /// The quarantine row does not match the latest event.
+    #[error("quarantine row for {record_id} does not match the audit log")]
+    Tampered { record_id: Uuid, reason: String },
+    /// A review was asked for without a reviewer name.
+    #[error("reviewer required, pass --by")]
+    MissingReviewer,
     /// A stored row could not be read back as a memory.
     #[error("stored event {0} is not valid")]
     Corrupt(i64),
@@ -84,6 +92,8 @@ pub(crate) struct StoredEvent {
     pub prev_hash: Vec<u8>,
     pub hash: Vec<u8>,
     pub created_at: String,
+    pub reviewer: Option<String>,
+    pub reason: Option<String>,
 }
 
 impl AuditLog {
@@ -98,13 +108,14 @@ impl AuditLog {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Self { conn })
     }
 
     /// Append one decision. Quarantine and block also land in the quarantine table.
     /// Allow clears a previous quarantine row for the same record.
     pub fn append(&self, record: &MemoryRecord, decision: &Decision) -> Result<i64, AuditError> {
-        let id = self.insert_event(record, decision)?;
+        let id = self.insert_event(record, decision, None, None)?;
         let stamp = now_rfc3339();
         match decision.action {
             Action::Quarantine | Action::Block => {
@@ -123,19 +134,48 @@ impl AuditLog {
     }
 
     /// Release a quarantined record. Writes a new allow event. Does not edit old rows.
-    pub fn approve(&self, id: Uuid) -> Result<(), AuditError> {
-        self.review(id, Action::Allow, "approve", "approved")
+    pub fn approve(&self, id: Uuid, review: &Review) -> Result<(), AuditError> {
+        self.review(id, Action::Allow, "approve", "released", review)
     }
 
     /// Keep a quarantined record out. Writes a new block event. Does not edit old rows.
-    pub fn reject(&self, id: Uuid) -> Result<(), AuditError> {
-        self.review(id, Action::Block, "reject", "rejected")
+    pub fn reject(&self, id: Uuid, review: &Review) -> Result<(), AuditError> {
+        self.review(id, Action::Block, "reject", "rejected", review)
+    }
+
+    /// Record that an adapter wrote a released record into its store.
+    pub fn mark_applied(&self, id: Uuid, store: &str) -> Result<(), AuditError> {
+        self.in_immediate(|| {
+            let latest = self.latest_event(id)?;
+            let Some(latest) = latest else {
+                return Err(not_quarantined(id, None));
+            };
+            if latest.action != "allow" || latest.rule_id != "approve" || latest.store != store {
+                return Err(not_quarantined(id, Some(&latest)));
+            }
+            if !self.row_matches_event(&latest)? {
+                return Err(AuditError::Tampered {
+                    record_id: id,
+                    reason: "row drifted before apply".to_string(),
+                });
+            }
+            let record = self.record_at(latest.id)?;
+            let decision = Decision {
+                action: Action::Allow,
+                rule_id: "applied".to_string(),
+                retrieval_weight: None,
+            };
+            let event_id = self.insert_event(&record, &decision, None, None)?;
+            self.upsert_quarantine(&id, "allow", event_id, &now_rfc3339())?;
+            Ok(())
+        })
     }
 
     pub(crate) fn events(&self) -> Result<Vec<StoredEvent>, AuditError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, record_id, store, namespace, key, content, provenance, version,
-                    action, rule_id, retrieval_weight, prev_hash, hash, created_at
+                    action, rule_id, retrieval_weight, prev_hash, hash, created_at,
+                    reviewer, reason
              FROM events ORDER BY id",
         )?;
         let rows = stmt.query_map([], read_event)?;
@@ -152,23 +192,75 @@ impl AuditLog {
         action: Action,
         rule_id: &str,
         status: &str,
+        review: &Review,
     ) -> Result<(), AuditError> {
-        let row = self.quarantine(id)?;
-        if row.status != "quarantine" {
-            return Err(AuditError::NotQuarantined(id));
+        if review.reviewer.trim().is_empty() {
+            return Err(AuditError::MissingReviewer);
         }
-        let record = self.record_at(row.event_id)?;
-        let decision = Decision {
-            action,
-            rule_id: rule_id.to_string(),
-            retrieval_weight: None,
-        };
-        let event_id = self.insert_event(&record, &decision)?;
-        self.upsert_quarantine(&id, status, event_id, &now_rfc3339())?;
-        Ok(())
+        self.in_immediate(|| {
+            let latest = self.latest_event(id)?;
+            let Some(row) = self.quarantine(id)? else {
+                return Err(not_quarantined(id, latest.as_ref()));
+            };
+            let Some(latest) = latest else {
+                return Err(AuditError::Tampered {
+                    record_id: id,
+                    reason: "row without an event".to_string(),
+                });
+            };
+            let agrees = latest.id == row.event_id
+                && row.status == expected_status(&latest.action, &latest.rule_id);
+            if !agrees {
+                return Err(AuditError::Tampered {
+                    record_id: id,
+                    reason: "row does not match the latest event".to_string(),
+                });
+            }
+            if latest.action != "quarantine" {
+                return Err(not_quarantined(id, Some(&latest)));
+            }
+            let record = self.record_at(row.event_id)?;
+            let decision = Decision {
+                action,
+                rule_id: rule_id.to_string(),
+                retrieval_weight: None,
+            };
+            let reason = review
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
+            let event_id =
+                self.insert_event(&record, &decision, Some(review.reviewer.trim()), reason)?;
+            self.upsert_quarantine(&id, status, event_id, &now_rfc3339())?;
+            Ok(())
+        })
     }
 
-    fn insert_event(&self, record: &MemoryRecord, decision: &Decision) -> Result<i64, AuditError> {
+    fn in_immediate<T>(
+        &self,
+        body: impl FnOnce() -> Result<T, AuditError>,
+    ) -> Result<T, AuditError> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match body() {
+            Ok(value) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn insert_event(
+        &self,
+        record: &MemoryRecord,
+        decision: &Decision,
+        reviewer: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<i64, AuditError> {
         let prev = self.tip_hash()?;
         let created_at = now_rfc3339();
         let namespace = serde_json::to_string(&record.namespace)
@@ -190,14 +282,17 @@ impl AuditLog {
             retrieval_weight: weight.as_deref(),
             prev_hash: &prev_hex,
             created_at: &created_at,
+            reviewer,
+            reason,
         };
         let body = chain_body(&fields)?;
         let digest = chain_hash(&prev, &body);
         self.conn.execute(
             "INSERT INTO events (
                 record_id, store, namespace, key, content, provenance, version,
-                action, rule_id, retrieval_weight, prev_hash, hash, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                action, rule_id, retrieval_weight, prev_hash, hash, created_at,
+                reviewer, reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 record.id.to_string(),
                 record.store,
@@ -212,6 +307,8 @@ impl AuditLog {
                 prev.as_slice(),
                 digest.as_slice(),
                 created_at,
+                reviewer,
+                reason,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -256,7 +353,7 @@ impl AuditLog {
         Ok(())
     }
 
-    fn quarantine(&self, id: Uuid) -> Result<QuarantineRow, AuditError> {
+    fn quarantine(&self, id: Uuid) -> Result<Option<QuarantineRow>, AuditError> {
         let row = self
             .conn
             .query_row(
@@ -270,7 +367,32 @@ impl AuditLog {
                 },
             )
             .optional()?;
-        row.ok_or(AuditError::NotQuarantined(id))
+        Ok(row)
+    }
+
+    fn latest_event(&self, id: Uuid) -> Result<Option<StoredEvent>, AuditError> {
+        self.conn
+            .query_row(
+                "SELECT id, record_id, store, namespace, key, content, provenance, version,
+                        action, rule_id, retrieval_weight, prev_hash, hash, created_at,
+                        reviewer, reason
+                 FROM events WHERE record_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![id.to_string()],
+                read_event,
+            )
+            .optional()
+            .map_err(AuditError::from)
+    }
+
+    fn row_matches_event(&self, event: &StoredEvent) -> Result<bool, AuditError> {
+        let id = Uuid::parse_str(&event.record_id).map_err(|_| AuditError::Corrupt(event.id))?;
+        let Some(row) = self.quarantine(id)? else {
+            return Ok(false);
+        };
+        Ok(
+            row.event_id == event.id
+                && row.status == expected_status(&event.action, &event.rule_id),
+        )
     }
 
     fn record_at(&self, event_id: i64) -> Result<MemoryRecord, AuditError> {
@@ -295,7 +417,8 @@ impl AuditLog {
         self.conn
             .query_row(
                 "SELECT id, record_id, store, namespace, key, content, provenance, version,
-                        action, rule_id, retrieval_weight, prev_hash, hash, created_at
+                        action, rule_id, retrieval_weight, prev_hash, hash, created_at,
+                        reviewer, reason
                  FROM events WHERE id = ?1",
                 params![id],
                 read_event,
@@ -322,6 +445,8 @@ struct ChainFields<'a> {
     retrieval_weight: Option<&'a str>,
     prev_hash: &'a str,
     created_at: &'a str,
+    reviewer: Option<&'a str>,
+    reason: Option<&'a str>,
 }
 
 pub(crate) fn chain_body_from_stored(event: &StoredEvent) -> Result<String, HashError> {
@@ -348,6 +473,8 @@ pub(crate) fn chain_body_from_stored(event: &StoredEvent) -> Result<String, Hash
         retrieval_weight: event.retrieval_weight.as_deref(),
         prev_hash: &prev_hex,
         created_at: &event.created_at,
+        reviewer: event.reviewer.as_deref(),
+        reason: event.reason.as_deref(),
     };
     chain_body(&fields)
 }
@@ -361,7 +488,7 @@ fn chain_body(fields: &ChainFields<'_>) -> Result<String, HashError> {
         }
         None => Value::Null,
     };
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "action": fields.action,
         "content": fields.content,
         "created_at": fields.created_at,
@@ -375,6 +502,14 @@ fn chain_body(fields: &ChainFields<'_>) -> Result<String, HashError> {
         "store": fields.store,
         "version": fields.version,
     });
+    if let Some(object) = value.as_object_mut() {
+        if let Some(reviewer) = fields.reviewer {
+            object.insert("reviewer".to_string(), Value::String(reviewer.to_string()));
+        }
+        if let Some(reason) = fields.reason {
+            object.insert("reason".to_string(), Value::String(reason.to_string()));
+        }
+    }
     canonical_json(&value)
 }
 
@@ -456,7 +591,53 @@ fn read_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
         prev_hash: row.get(11)?,
         hash: row.get(12)?,
         created_at: row.get(13)?,
+        reviewer: row.get(14)?,
+        reason: row.get(15)?,
     })
+}
+
+fn migrate(conn: &Connection) -> Result<(), AuditError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(events)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = Vec::new();
+    for name in names {
+        columns.push(name?);
+    }
+    if !columns.iter().any(|name| name == "reviewer") {
+        conn.execute_batch("ALTER TABLE events ADD COLUMN reviewer TEXT")?;
+    }
+    if !columns.iter().any(|name| name == "reason") {
+        conn.execute_batch("ALTER TABLE events ADD COLUMN reason TEXT")?;
+    }
+    Ok(())
+}
+
+pub(crate) fn expected_status(action: &str, rule_id: &str) -> &'static str {
+    match (action, rule_id) {
+        ("quarantine", _) => "quarantine",
+        ("block", "reject") => "rejected",
+        ("block", _) => "block",
+        ("allow", "approve") => "released",
+        _ => "allow",
+    }
+}
+
+pub(crate) fn status_needs_row(action: &str, rule_id: &str) -> bool {
+    matches!(action, "quarantine" | "block") || matches!(rule_id, "approve" | "applied" | "reject")
+}
+
+fn not_quarantined(id: Uuid, latest: Option<&StoredEvent>) -> AuditError {
+    let detail = match latest {
+        Some(event) => match event.reviewer.as_deref() {
+            Some(reviewer) => format!(
+                " (latest: {} by {reviewer} at {})",
+                event.action, event.created_at
+            ),
+            None => format!(" (latest: {} at {})", event.action, event.created_at),
+        },
+        None => String::new(),
+    };
+    AuditError::NotQuarantined(format!("record {id} is not quarantined{detail}"))
 }
 
 #[cfg(test)]
@@ -547,30 +728,93 @@ mod tests {
         log.append(&blocked, &decision(Action::Block, "block", None))
             .expect("append");
 
-        log.approve(waiting.id).expect("approve");
-        let err = log.approve(waiting.id).expect_err("second approve");
+        let review = Review {
+            reviewer: "alice".to_string(),
+            reason: Some("checked".to_string()),
+        };
+        log.approve(waiting.id, &review).expect("approve");
+        let err = log
+            .approve(waiting.id, &review)
+            .expect_err("second approve");
         assert!(matches!(err, AuditError::NotQuarantined(_)));
-        let err = log.reject(blocked.id).expect_err("reject block");
+        let err = log.reject(blocked.id, &review).expect_err("reject block");
         assert!(matches!(err, AuditError::NotQuarantined(_)));
         let missing = Uuid::now_v7();
         assert!(matches!(
-            log.approve(missing).expect_err("missing"),
+            log.approve(missing, &review).expect_err("missing"),
             AuditError::NotQuarantined(_)
         ));
 
         let rejected = sample_record("later");
         log.append(&rejected, &decision(Action::Quarantine, "default", None))
             .expect("append");
-        log.reject(rejected.id).expect("reject");
+        log.reject(rejected.id, &review).expect("reject");
 
         let events = log.events().expect("events");
         assert_eq!(events.len(), 5);
         assert_eq!(events[2].rule_id, "approve");
         assert_eq!(events[2].action, "allow");
+        assert_eq!(events[2].reviewer.as_deref(), Some("alice"));
+        assert_eq!(events[2].reason.as_deref(), Some("checked"));
+        assert_eq!(events[2].provenance, events[0].provenance);
         assert_eq!(events[4].rule_id, "reject");
         assert_eq!(events[4].action, "block");
         assert_eq!(events[0].content, "hold");
         assert!(log.verify().expect("verify").is_none());
+    }
+
+    fn reviewer() -> Review {
+        Review {
+            reviewer: "alice".to_string(),
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn a_blank_reviewer_writes_nothing() {
+        let (_dir, log) = open_log();
+        let record = sample_record("hold");
+        log.append(&record, &decision(Action::Quarantine, "default", None))
+            .expect("append");
+        let blank = Review {
+            reviewer: " ".to_string(),
+            reason: None,
+        };
+        let err = log.approve(record.id, &blank).expect_err("blank");
+        assert!(matches!(err, AuditError::MissingReviewer));
+        assert_eq!(log.events().expect("events").len(), 1);
+    }
+
+    #[test]
+    fn mark_applied_leaves_the_released_list() {
+        let (_dir, log) = open_log();
+        let record = sample_record("hold");
+        log.append(&record, &decision(Action::Quarantine, "default", None))
+            .expect("append");
+        log.approve(record.id, &reviewer()).expect("approve");
+        assert_eq!(log.released("mem0").expect("released").len(), 1);
+        log.mark_applied(record.id, "mem0").expect("applied");
+        assert!(log.released("mem0").expect("released").is_empty());
+        assert!(log.verify().expect("verify").is_none());
+    }
+
+    #[test]
+    fn a_rewritten_quarantine_row_is_tampered() {
+        let (_dir, log) = open_log();
+        let record = sample_record("hold");
+        log.append(&record, &decision(Action::Quarantine, "default", None))
+            .expect("append");
+        log.reject(record.id, &reviewer()).expect("reject");
+        log.conn
+            .execute(
+                "UPDATE quarantine SET status = 'quarantine' WHERE record_id = ?1",
+                params![record.id.to_string()],
+            )
+            .expect("tamper");
+        let err = log.approve(record.id, &reviewer()).expect_err("tampered");
+        assert!(matches!(err, AuditError::Tampered { .. }));
+        let broken = log.verify().expect("verify").expect("broken");
+        assert_eq!(broken.reason, "quarantine row does not match events");
     }
 
     #[test]

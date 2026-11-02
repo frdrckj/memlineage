@@ -61,6 +61,32 @@ pub enum Action {
     Block,
 }
 
+/// Who released or rejected a held record, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Review {
+    pub reviewer: String,
+    pub reason: Option<String>,
+}
+
+impl Review {
+    /// A reviewer name is required. A blank reason is stored as none.
+    pub fn new(reviewer: impl Into<String>, reason: Option<String>) -> Result<Self, &'static str> {
+        let reviewer = reviewer.into();
+        if reviewer.trim().is_empty() {
+            return Err("reviewer required, pass --by");
+        }
+        let reason = reason.and_then(|text| {
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        Ok(Self { reviewer, reason })
+    }
+}
+
 /// Outcome of one policy check.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decision {

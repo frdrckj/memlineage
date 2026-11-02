@@ -124,12 +124,12 @@ def test_approve_then_second_approve_fails(tmp_path: Path, monkeypatch: pytest.M
             decision = fw.check(record)
     assert decision.action == "quarantine"
     record_id = str(record["id"])
-    fw.approve(record_id)
+    fw.approve(record_id, "alice", "checked")
     with pytest.raises(MemlineageError):
-        fw.approve(record_id)
+        fw.approve(record_id, "alice")
 
 
 def test_bad_id_is_a_value_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fw = _open(tmp_path, monkeypatch)
     with pytest.raises(ValueError):
-        fw.approve("not-a-uuid")
+        fw.approve("not-a-uuid", "alice")
