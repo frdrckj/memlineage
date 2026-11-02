@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - `review approve` and `review reject` record the reviewer and an optional reason.
 - A release stays out of the store until the Mem0 or LangGraph adapter applies it.

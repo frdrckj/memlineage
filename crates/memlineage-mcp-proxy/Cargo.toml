@@ -13,7 +13,7 @@ description = "Stdio proxy that checks MCP memory writes."
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-memlineage-core = { path = "../memlineage-core", version = "0.1.0" }
+memlineage-core = { path = "../memlineage-core", version = "0.2.0" }
 serde_json.workspace = true
 uuid.workspace = true
 

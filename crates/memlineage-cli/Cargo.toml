@@ -13,7 +13,7 @@ description = "Command line for the memlineage audit log."
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-memlineage-core = { path = "../memlineage-core", version = "0.1.0" }
+memlineage-core = { path = "../memlineage-core", version = "0.2.0" }
 uuid.workspace = true
 
 [dev-dependencies]
